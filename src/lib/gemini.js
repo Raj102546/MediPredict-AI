@@ -1,10 +1,10 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import Groq from 'groq-sdk'
 
-const API_KEY = 'AIzaSyCBeNESDAc0U82H07SnGUG_0yGShush9Nc'
-const genAI   = new GoogleGenerativeAI(API_KEY)
+const API_KEY = import.meta.env.VITE_GROQ_API_KEY || ''
+const groq    = new Groq({ apiKey: API_KEY, dangerouslyAllowBrowser: true })
 
-// gemini-1.5-flash-latest → higher free quota than gemini-2.0-flash
-const DEFAULT_MODEL = 'gemini-1.5-flash-latest'
+// Using llama-3.3-70b-versatile (currently active model)
+const DEFAULT_MODEL = 'llama-3.3-70b-versatile'
 
 // ─── Retry helper — waits and retries on 429 ─────────────────────────────────
 const withRetry = async (fn, retries = 3, delayMs = 2000) => {
@@ -36,12 +36,16 @@ const withRetry = async (fn, retries = 3, delayMs = 2000) => {
  */
 export const geminiPrompt = async (prompt, systemInstruction = '') => {
   return withRetry(async () => {
-    const model = genAI.getGenerativeModel({
+    const message = await groq.chat.completions.create({
       model: DEFAULT_MODEL,
-      ...(systemInstruction ? { systemInstruction } : {}),
+      messages: [
+        ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.7,
+      max_tokens: 2048,
     })
-    const result = await model.generateContent(prompt)
-    return result.response.text()
+    return message.choices[0]?.message?.content || ''
   })
 }
 
@@ -50,11 +54,10 @@ export const geminiPrompt = async (prompt, systemInstruction = '') => {
  * Used for the Phase 1 chat window
  */
 export const createChatSession = (systemInstruction = '') => {
-  const model = genAI.getGenerativeModel({
-    model: DEFAULT_MODEL,
-    ...(systemInstruction ? { systemInstruction } : {}),
-  })
-  return model.startChat({ history: [] })
+  return {
+    history: [],
+    systemInstruction,
+  }
 }
 
 /**
@@ -63,8 +66,26 @@ export const createChatSession = (systemInstruction = '') => {
  */
 export const sendChatMessage = async (session, message) => {
   return withRetry(async () => {
-    const result = await session.sendMessage(message)
-    return result.response.text()
+    const messages = [
+      ...(session.systemInstruction ? [{ role: 'system', content: session.systemInstruction }] : []),
+      ...session.history,
+      { role: 'user', content: message }
+    ]
+    
+    const response = await groq.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 2048,
+    })
+    
+    const assistantMessage = response.choices[0]?.message?.content || ''
+    
+    // Store in history for next turn
+    session.history.push({ role: 'user', content: message })
+    session.history.push({ role: 'assistant', content: assistantMessage })
+    
+    return assistantMessage
   })
 }
 
@@ -84,4 +105,4 @@ export const parseGeminiJSON = (raw) => {
   }
 }
 
-export { genAI, DEFAULT_MODEL }
+export { groq, DEFAULT_MODEL }
